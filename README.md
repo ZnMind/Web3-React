@@ -1,10 +1,14 @@
-This is the tutorial from [DApp Univeristy](https://www.dappuniversity.com/) which is configured to work on harmony blockchain.
+Simple react app for interacting with the Harmony blockchain.
 
-Steps
-* `npm install`
-* `truffle compile`
-* `truffle migrate --reset --network testnet`
-* `npm start` which should popup http://localhost:3000/ page
-* make sure to connect metamask to harmony testnet, as the dbank contracts are deployed on harmony testnet 
+Metamask instructions
+* Network Name: Harmony Mainnet
+* New RPC Url: https://api.s0.t.hmny.i0
+* Chain Id: 1666600000
 
-![dbank](dbank.png)
+* Network Name: Harmony Testnet
+* New RPC Url: https://api.s0.b.hmny.i0
+* Chain Id: 1666700000
+
+This is specifically for interacting with Defi Kingdoms contracts and uses their router at 0x24ad62502d1C652Cc7684081169D04896aC20f30, but it will work with any Uniswap Router/Factory/Pair Contracts just update the addresses.
+
+npm start runs on localhost:5000

@@ -1,1 +1,12 @@
-/* Styles go here */
+body {
+    background-color: lightgray;
+}
+
+.container-fluid {
+    background-color: lightgray;
+}
+
+.navbar {
+    text-decoration-color: white;
+    color: white;
+}
