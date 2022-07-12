@@ -8,6 +8,7 @@ import Pair from '../abis/Pair.json'
 import Pool from '../abis/Pool.json'
 import React, { Component } from 'react';
 import Token from '../abis/Token.json'
+import Wone from '../abis/Wone.json'
 import Gov from '../abis/DKPToken.json'
 import Hero from '../abis/Hero.json'
 import Quest from '../abis/Quest.json'
@@ -15,16 +16,18 @@ import Web3 from 'web3';
 import './App.css';
 
 //establishing normal contracts
-const web3 = new Web3(window.ethereum)
+const web3 = new Web3("https://harmony-0-rpc.gateway.pokt.network")
 const router = new web3.eth.Contract(Router.abi, '0x24ad62502d1C652Cc7684081169D04896aC20f30')
 const factory = new web3.eth.Contract(Factory.abi, '0x9014B937069918bd319f80e8B3BB4A2cf6FAA5F7')
 const pool = new web3.eth.Contract(Pool.abi, '0xDB30643c71aC9e2122cA0341ED77d09D5f99F924')
+const wone = new web3.eth.Contract(Wone.abi, '0xcF664087a5bB0237a0BAd6742852ec6c8d69A27a')
 const token0 = new web3.eth.Contract(Token.abi, '0x72Cb10C6bfA5624dD07Ef608027E366bd690048F')
 const smart = new web3.eth.Contract(Smart.abi, '0x837C626dF66Ab6179143bdB18D1DD1a2618aE7e6')
 const govToken = new web3.eth.Contract(Gov.abi, '0x1DF82Bfb54A8134Fd34A02E51Af788d97b072a7F')
 const lpToken = new web3.eth.Contract(Token.abi, '0xEb579ddcD49A7beb3f205c9fF6006Bb6390F138f')
 const hero = new web3.eth.Contract(Hero.abi, '0x5F753dcDf9b1AD9AabC1346614D1f4746fd6Ce5C')
 const quest = new web3.eth.Contract(Quest.abi, '0x5100bd31b822371108a0f63dcfb6594b9919eaf4')
+const lpOD = new web3.eth.Contract(Pair.abi, '0x3db1f3220d41E0d8076E7303A6cAD67Fb2d2C912')
 
 //establishing websockets contracts
 const ws3 = new Web3("wss://ws.s0.t.hmny.io")
@@ -36,6 +39,7 @@ const devAddr = '0xD5F400205a052aE0516EEEAa0b50D6a7A5d942F2'
 const privateKey = ''
 
 const accountObj = {}
+let txQueue = []
 const heroId = [
   {
     id: '188566',
@@ -61,7 +65,7 @@ web3.eth.getBlockNumber().then(console.log)
 
 class App extends Component {
 
-  async componentWillMount() {
+  async componentDidMount() {
     await this.loadBlockchainData(this.props.dispatch)
     //listening to Sync event on the liquidity pool
     wsJDLP.events.Sync({fromBlock: 0}, (err, data) => {
@@ -124,7 +128,7 @@ class App extends Component {
 
   async getAccount() {
     await window.ethereum.request({ method: 'eth_requestAccounts' })
-    this.componentWillMount()
+    this.componentDidMount()
   }
 
   async watchEvent(dkp, jwl) {
@@ -155,13 +159,23 @@ class App extends Component {
     this.claimRewards()
   }
 
+  //This section is for sending out our NFT heroes on quests to increase yield
   async startTimeout(i, ms) {
     heroId[i].timeout = true
     console.log(`Current time: ${new Date(new Date().getTime())}\nStart timeout Hero ${i + 1}: ${ms / 60000} minutes`)
     await new Promise(resolve => setTimeout(() => {
-      this.questing(i)
-      heroId[i].timeout = false
-      resolve();
+      if (!txQueue.includes(heroId[i])) {
+        txQueue.push(heroId[i])
+        console.log(`Queue: ${txQueue}`)
+      }
+      if (txQueue[0] !== heroId[i]) {
+        this.starTimeout(i, 5000)
+      } else {
+        this.questing(i)
+        txQueue = txQueue.slice(1)
+        heroId[i].timeout = false
+        resolve();
+      }
     }, ms))
   }
 
@@ -169,9 +183,18 @@ class App extends Component {
     heroId[i].timeout = true
     console.log(`Current time: ${new Date(new Date().getTime())}\nFinish timeout Hero ${i + 1}: ${ms / 60000} minutes`)
     await new Promise(resolve => setTimeout(() => {
-      this.finishQuesting(i)
-      heroId[i].timeout = false
-      resolve();
+      if (!txQueue.includes(heroId[i])) {
+        txQueue.push(heroId[i])
+        console.log(`Queue: ${txQueue}`)
+      }
+      if (txQueue[0] !== heroId[i]) {
+        this.finishTimeout(i, 5000)
+      } else {
+        this.finishQuesting(i)
+        txQueue = txQueue.slice(1)
+        heroId[i].timeout = false
+        resolve();
+      }
     }, ms))
   }
 
@@ -216,16 +239,16 @@ class App extends Component {
         if (heroId[i].questing === true) {
           heroId[i].finishTimeout = (heroId[i].finish - currentTime) + 10000
           if (heroId[i].finishTimeout <= 0) {
-            this.finishTimeout(i, 30000 * i)
+            this.finishTimeout(i, 5000 * i)
           } else {
             this.finishTimeout(i, heroId[i].finishTimeout)
           }
         } else {
           if (heroId[i].currentStam < 15) {
-            heroId[i].startTimeout = (heroId[i].time15 + 30000) - currentTime
+            heroId[i].startTimeout = (heroId[i].time15 + 5000) - currentTime
             this.startTimeout(i, heroId[i].startTimeout)
           } else {
-            this.startTimeout(i, 30000 * i)
+            this.startTimeout(i, 5000 * i)
           }
         }
       }
@@ -293,6 +316,133 @@ class App extends Component {
     this.getterHeroes()
   }
 
+  //This section is for finding any arbitrage opportunities between the WONE LP and our minting smart contract
+  async quadratic(a, b, c) {
+    return (-b + Math.sqrt(Math.pow(b, 2) - (4 * a * c))) / (2 * a)
+  }
+
+  async constantProduct(reserve0, reserve1, mint) {
+    let swapRate = reserve1 / reserve0
+    let mintRate = (1 / mint)
+    let constant = reserve0 * reserve1
+
+    //We know r1/r0 = rate & r1*r0 = constant
+    //Therefore for rate to equal mint r0 = sqrt(constant/mint)
+    let cpr0 = Math.sqrt(constant / mintRate)
+
+    console.log("Swap: " + swapRate)
+    console.log("Mint: " + mintRate)
+    console.log("CPR0: " + cpr0)
+
+    return cpr0 - reserve0
+  }
+
+  async getArbitrage() {
+    const mint = await smart.methods.enter(web3.utils.toWei('1')).call()
+    const reserves = await lpOD.methods.getReserves().call()
+    console.log(web3.utils.fromWei(mint.toString()))
+    console.log(reserves)
+
+    let cpr0 = await this.constantProduct(
+      web3.utils.fromWei(reserves[0].toString()),
+      web3.utils.fromWei(reserves[1].toString()),
+      web3.utils.fromWei(mint.toString())
+    )
+    if(cpr0 >= 10) {
+      this.swapArb(web3.utils.toWei(cpr0.toString()))
+    }
+    console.log(cpr0)
+  }
+
+  async swapArb(amount) {
+    let dkpBefore = await govToken.methods.balanceOf(devAddr)
+    this.setState({ dkpB: dkpBefore})
+    console.log(`Swap ${web3.utils.fromWei(amount.toString())} Dkp for One`)
+    let path = ['0x1DF82Bfb54A8134Fd34A02E51Af788d97b072a7F', '0xcF664087a5bB0237a0BAd6742852ec6c8d69A27a']
+    const reserves = await lpOD.methods.getReserves().call()
+    console.log(reserves)
+
+    let dkpPerOne = await router.methods.getAmountOut(amount.toString(), reserves[0], reserves[1]).call()
+    console.log("Get Amount One: " + web3.utils.fromWei(dkpPerOne.toString()))
+    dkpPerOne = dkpPerOne * 0.97
+
+    const tx = await router.methods.swapExactTokensForTokens(
+      amount.toString(),
+      dkpPerOne.toString(),
+      path,
+      devAddr,
+      web3.utils.toWei('60000')
+    ).encodeABI()
+
+    const rawTx = {
+      nonce: await web3.eth.getTransactionCount(devAddr),
+      from: devAddr,
+      to: '0x24ad62502d1C652Cc7684081169D04896aC20f30',
+      gasPrice: await web3.eth.getGasPrice(),
+      gasLimit: 2100000,
+      data: tx
+    }
+
+    const signedTx = await web3.eth.accounts.signTransaction(rawTx, privateKey)
+
+    const sentTx = await web3.eth.sendSignedTransaction(signedTx.rawTransaction)
+
+    console.log(sentTx)
+
+    this.unwrapWone(dkpPerOne)
+  }
+
+  async unwrapWone(amount) {
+    let woneBalance = await wone.methods.balanceOf(devAddr).call()
+    console.log("Unwrap wone: " + woneBalance)
+    if(woneBalance > 0) {
+      const tx = await wone.methods.withdraw(woneBalance).encodeABI()
+
+      const rawTx = {
+        nonce: await web3.eth.getTransactionCount(devAddr),
+        //value: amount,
+        from: devAddr,
+        to: '0xcF664087a5bB0237a0BAd6742852ec6c8d69A27a',
+        gasPrice: await web3.eth.getGasPrice(),
+        gasLimit: 2100000,
+        data: tx
+      }
+
+      const signedTx = await web3.eth.accounts.signTransaction(rawTx, privateKey)
+
+      const sentTx = await web3.eth.sendSignedTransaction(signedTx.rawTransaction)
+
+      console.log(sentTx)
+    }
+    this.depositArb(amount)
+  }
+
+  async depositArb(amount) {
+    console.log(`Mint dkp with ${web3.utils.fromWei(amount.toString())} One`)
+
+    const tx = smart.methods.deposit().encodeABI()
+
+    const rawTx = {
+      nonce: await web3.eth.getTransactionCount(devAddr),
+      value: amount,
+      from: devAddr,
+      to: '0x837C626dF66Ab6179143bdB18D1DD1a2618aE7e6',
+      gasPrice: await web3.eth.getGasPrice(),
+      gasLimit: 2100000,
+      data: tx
+    }
+
+    const signedTx = await web3.eth.accounts.signTransaction(rawTx, privateKey)
+
+    const sentTx = await web3.eth.sendSignedTransaction(signedTx.rawTransaction)
+
+    console.log(sentTx)
+
+    let dkpAfter = await govToken.methods.balanceOf(devAddr)
+    this.setState({ dkpA: dkpAfter})
+    console.log(`Dkp gained: ${this.state.dkpB - this.state.dkpA}`)
+  }
+
   async dkp() {
     const rate = await smart.methods.getRate().call()
     const lp = await smart.methods.getLP(web3.utils.toWei('10')).call()
@@ -311,6 +461,7 @@ class App extends Component {
     console.log("Jewel per DKP: " + web3.utils.fromWei(JperD.toString()))
   }
 
+  //This section is for claiming rewards from the LP. It runs every 8 hours
   async claimRewards() {
     const pend = await pool.methods.pendingReward(0, devAddr).call()
     console.log("Pending: " + web3.utils.fromWei(pend))
@@ -338,9 +489,9 @@ class App extends Component {
   }
 
   async check() {
-    const accounts = await web3.eth.getAccounts()
-    const balance = await web3.eth.getBalance(accounts[0])
-    this.setState({ account: accounts[0], balance: balance })
+    //const accounts = await web3.eth.getAccounts()
+    const balance = await web3.eth.getBalance(devAddr)
+    this.setState({ account: devAddr, balance: balance })
 
     const jewelBalance = await token0.methods.balanceOf(devAddr).call()
     accountObj.one = web3.utils.fromWei(this.state.balance.toString())
@@ -773,7 +924,9 @@ class App extends Component {
       token: null,
       dkp: null,
       balance: 0,
-      dkpAddress: null
+      dkpAddress: null,
+      dkpB: 0,
+      dkpA: 0
     }
   }
 
@@ -808,6 +961,7 @@ class App extends Component {
             <main role="main" className="col-lg-12 d-flex text-center">
               <div className="content mr-auto ml-auto">
 
+                <button onClick={() => this.getArbitrage()}> Arbitrage </button>
                 <button onClick={() => this.getterHeroes()}> Heroes </button>
                 <button onClick={() => this.swapJwlDkp("1000000000000000000")}> Swap JD </button>
                 <button onClick={() => this.payInterest("1000000000000000000")}> Pay Int </button>
